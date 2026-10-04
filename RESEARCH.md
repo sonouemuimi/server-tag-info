@@ -98,3 +98,19 @@ API 仓库：https://github.com/revenge-mod/revenge-bundle-next
 14 项模拟集成测试：官方及动态结构、字符串 ID、GuildStore 优先、错 ID/错名称防护、会话缓存、未提供名称、已导出 cache、原点击保留、无 identity 时不接管、晚加载资料页、禁用/重启、两套真实 loader 表达式格式。
 
 这些测试不等于 Android 真机兼容性验证，也没有反向验证 Discord 私有模块的 getter 内部实现。插件没有额外请求的 HTTP/WS 能力，只读取/观察当前客户端对象。
+
+## 设备反馈与 1.0.1 调整
+
+2026-10-04 用户截图：Discord 344.13 (344013)，Revenge 1b1d297-main。
+用户运行日志确认：
+
+- UserStore.getUser.primaryGuild: badge, identityEnabled, identityGuildId, tag。
+- modules/guild_tag/native/GuildTag.tsx 的 default、BaseGuildTagChiplet。
+- modules/guild_tag/native/VoiceGuildTag.tsx 的 VoiceGuildTagChiplet。
+- modules/user_profile/native/UserProfileAboutMeCard.tsx。
+- modules/guild_profile/native/components/GuildProfileActionSheet.tsx。
+- GuildStore.getGuild 命中时已成功显示名称；另两个目标 ID 未命中当前读取来源，点击日志存在。
+
+日志中的 hook installed 只表示已经包装导出函数；其中 utilities/badges 的 68 个宽泛 Hook 不能计作 68 个有效标签点击入口。1.0.1 去掉按 guild_tag 目录一概匹配的规则，仅使用上述组件入口及明确的标签组件名，增加缓存阶段及主要 Store 的表面结构诊断。方法元数据只枚举，不调用；其他 store 的未知接口不猜测、不请求。
+
+1.0.1 通过 19 项模拟测试；设备回归需用户更新后验证。公开仓库不保存用户原始日志、用户资料或本次目标服务器 ID。

@@ -1,9 +1,9 @@
-/* ServerTagInfo 1.0.0 — no REST calls, no force-requiring Discord modules. */
+/* ServerTagInfo 1.0.1 — no REST calls, no force-requiring Discord modules. */
 function createServerTagInfo(A) {
     const React = A.React, RN = A.RN;
     const cleanup = [], stores = new Map(), roots = new Map(), snapshots = new Map();
     let patched = new WeakMap();
-    const schemas = new Set(), logs = [];
+    const schemas = new Set(), logs = [], reportedStores = new Set();
     let active = false, tagHooks = 0, profileHooks = 0, sheetHooks = 0;
     const obj = v => v !== null && (typeof v === 'object' || typeof v === 'function');
     const norm = k => String(k).replace(/[_-]/g, '').toLowerCase();
@@ -94,6 +94,14 @@ function createServerTagInfo(A) {
             memberCount: Number.isFinite(field(v, 'membercount').value) ? field(v, 'membercount').value : null,
             raw: v };
     }
+    function cacheEntry(v, id) {
+        if (!obj(v)) return undefined;
+        // Map may come from another JS realm. Use its built-in brand, not instanceof.
+        try {
+            if (Object.prototype.toString.call(v) === '[object Map]') return Map.prototype.get.call(v, id);
+        } catch (_) {}
+        return read(v, id);
+    }
     function findGuild(root, id, allowRoot) {
         if (allowRoot) { const direct = guild(root, id); if (direct) return direct; }
         const seen = new Set(), queue = [[root, 0, false]];
@@ -109,10 +117,16 @@ function createServerTagInfo(A) {
                 const n = norm(k), c = read(v, k);
                 if (/^(guild|guilds|guildprofile|guildprofiles|guildpreview|guildpreviews|primaryguild|clan)$/.test(n)) {
                     queue.push([c, depth + 1, true]);
-                    const entry = c instanceof Map ? c.get(id) : read(c, id);
+                    const entry = cacheEntry(c, id);
                     if (obj(entry)) queue.push([entry, depth + 1, true]);
                 } else if (/^(user|author|profile|userprofile|data|body|props|default|cache|state)$/.test(n)) {
                     queue.push([c, depth + 1, false]);
+                    // Cache may directly map snowflakes to complete guild objects.
+                    // Still require an exact explicit guild id inside the cached value.
+                    if (n === 'cache') {
+                        const entry = cacheEntry(c, id);
+                        if (obj(entry)) queue.push([entry, depth + 1, true]);
+                    }
                 }
             }
         }
@@ -130,6 +144,7 @@ function createServerTagInfo(A) {
     function resolve(ctx) {
         const id = ctx.identity.id;
         let selected = null, icon = null;
+        const stages = { loaded: { checked: roots.size, hits: 0 }, stores: { checked: 0, hits: 0 }, session: { hits: 0 }, profile: { checked: 0, hits: 0 } };
         function consider(g, source) {
             if (!g) return;
             if (!selected || (!selected.name && g.name)) selected = { ...g, source };
@@ -139,18 +154,50 @@ function createServerTagInfo(A) {
         log('guild cache result = ' + JSON.stringify(current ? { id, name: current.name, icon: current.icon, source: 'GuildStore' } : { id, source: 'GuildStore', hit: false }));
         consider(current, 'GuildStore'); remember(current, 'GuildStore');
         // Only already-exported data objects. No fetch methods or private profile endpoints.
-        for (const [key, root] of roots) consider(findGuild(root, id, false), 'loaded module ' + key);
+        for (const [key, root] of roots) {
+            const g = findGuild(root, id, false); if (g) stages.loaded.hits++;
+            consider(g, 'loaded module ' + key);
+        }
         // Discord secondary stores: only inspect data containers that already exist.
         for (const [name, store] of stores) {
-            if (/Guild.*(?:Store|Cache)/i.test(name) && name !== 'GuildStore')
-                consider(findGuild(store, id, false), name);
+            if (/Guild.*(?:Store|Cache)/i.test(name) && name !== 'GuildStore') {
+                stages.stores.checked++;
+                const g = findGuild(store, id, false); if (g) stages.stores.hits++;
+                consider(g, name);
+            }
         }
         const old = snapshots.get(id);
-        if (old) consider(old, 'session cache (' + old.source + ')');
-        for (const [root, source] of ctx.candidates || []) consider(findGuild(root, id, false), source);
+        if (old) { stages.session.hits++; consider(old, 'session cache (' + old.source + ')'); }
+        for (const [root, source] of ctx.candidates || []) {
+            stages.profile.checked++;
+            const g = findGuild(root, id, false); if (g) stages.profile.hits++;
+            consider(g, source);
+        }
         consider(guild(ctx.identity.raw, id), ctx.identity.path);
         if (!selected) selected = { id, name: null, icon: null, source: '客户端未提供' };
         selected.icon = selected.icon || icon;
+        log('cache stages = ' + JSON.stringify(stages));
+        if (!selected.name) {
+            for (const name of ['GuildStore', 'BasicGuildStore', 'GuildProfileStore', 'GuildPopoutStore']) {
+                const store = stores.get(name);
+                if (!store || reportedStores.has(name)) continue;
+                reportedStores.add(name);
+                const methods = new Set(), containers = keys(store).filter(k => /guild|profile|cache|state/i.test(k));
+                // Metadata only. Do not invoke any additional cache/profile getters.
+                let proto = store;
+                for (let depth = 0; proto && depth < 4; depth++) {
+                    try {
+                        for (const key of Object.getOwnPropertyNames(proto)) {
+                            const d = Object.getOwnPropertyDescriptor(proto, key);
+                            if (d && typeof d.value === 'function' && /guild|profile|cache/i.test(key)) methods.add(key);
+                        }
+                        proto = Object.getPrototypeOf(proto);
+                    } catch (_) { break; }
+                }
+                log('cache surface = ' + JSON.stringify({ store: name, methods: [...methods].slice(0, 40), containers }));
+            }
+        }
+        log('guild resolution = ' + JSON.stringify({ id, source: selected.source, hasName: !!selected.name }));
         log('guild name = ' + (selected.name || '客户端未提供'));
         return { ...selected, identity: ctx.identity };
     }
@@ -265,9 +312,12 @@ function createServerTagInfo(A) {
             set.add(key); cleanup.push(unpatch); log('hook installed = ' + label); return true;
         } catch (e) { log('hook unavailable (' + label + ') = ' + String(e)); return false; }
     }
-    function component(parent, key, name, path) {
-        const tag = /(?:Guild|Server|Clan)(?:Identity)?Tag(?:Badge|Pill|Chip|Button)?$/i.test(name) ||
-            /(?:guild|server|clan)[_-]?tag(?:\/|\.|$)/i.test(path || '');
+    function component(parent, key, name, path, exportKey) {
+        const tagName = /^(?:(?:Guild|Server|Clan)(?:Identity)?Tag(?:Pill|Chip(?:let)?|Button)?|BaseGuildTagChiplet|VoiceGuildTagChiplet)$/;
+        // Device logs identify native/GuildTag.tsx and its BaseGuildTagChiplet.
+        // A directory containing guild_tag also holds utilities/actions/badges; do not patch those.
+        const tag = tagName.test(name) || tagName.test(exportKey || key) ||
+            ((exportKey || key) === 'default' && /(?:^|\/)native\/(?:GuildTag|VoiceGuildTag)\.tsx$/.test(path || ''));
         // Verified mobile plugin anchors; only add an entry when actual identity data exists.
         const profile = /^(?:UserProfileBio|UserProfileAboutMeCard|SimplifiedUserProfileAboutMeCard|YouAboutMeCard)$/.test(name);
         const sheet = /^(?:Guild|Server|Clan)(?:Profile|Identity)(?:Action)?Sheet$/.test(name);
@@ -289,7 +339,7 @@ function createServerTagInfo(A) {
         const getName = read(v, 'getName');
         if (typeof getName !== 'function' || getName.length !== 0) return;
         let name; try { name = getName.call(v); } catch (_) { return; }
-        if (typeof name !== 'string' || !/(?:User|Guild|Profile).*Store/.test(name)) return;
+        if (typeof name !== 'string' || (!/Guild.*Store/.test(name) && !/^(UserStore|UserProfileStore)$/.test(name))) return;
         if (!stores.has(name)) log('store found = ' + name);
         stores.set(name, v);
         if (/Guild.*(?:Store|Cache)/.test(name)) {
@@ -308,7 +358,7 @@ function createServerTagInfo(A) {
         if (!active || !obj(exports)) return;
         registerStore(exports); registerStore(read(exports, 'default'));
         // Retain bounded references to existing data exports only, not arbitrary module graphs.
-        if ([exports, read(exports, 'default')].some(v => keys(v).some(k => /^(guilds?|guildprofiles?|guildpreviews?|cache)$/i.test(k)))) {
+        if ([exports, read(exports, 'default')].some(v => keys(v).some(k => /^(guilds?|guildprofiles?|guildpreviews?|cache)$/.test(norm(k))))) {
             roots.set(moduleId, exports);
             while (roots.size > 300) roots.delete(roots.keys().next().value);
         }
@@ -318,7 +368,7 @@ function createServerTagInfo(A) {
             else if (obj(value)) {
                 for (const sub of ['type', 'render']) {
                     const fn = read(value, sub);
-                    if (typeof fn === 'function') component(value, sub, value.displayName || fn.displayName || fn.name || key, path);
+                    if (typeof fn === 'function') component(value, sub, value.displayName || fn.displayName || fn.name || key, path, key);
                 }
             }
         }
@@ -333,7 +383,7 @@ function createServerTagInfo(A) {
         const [uid, setUid] = React.useState(''), [status, setStatus] = React.useState('');
         const dark = darkTheme();
         return React.createElement(RN.ScrollView, { contentContainerStyle: { padding: 16 } },
-            React.createElement(RN.Text, { style: textStyle(dark) }, 'ServerTagInfo 1.0.0\n只读本地数据。名称缺失时显示“客户端未提供”。\n点击标签可查看；如果点击没有匹配，可从资料页入口或下方用户 ID 查看。'),
+            React.createElement(RN.Text, { style: textStyle(dark) }, 'ServerTagInfo 1.0.1\n只读本地数据。名称缺失时显示“客户端未提供”。\n点击标签可查看；如果点击没有匹配，可从资料页入口或下方用户 ID 查看。'),
             React.createElement(RN.TextInput, { value: uid, onChangeText: setUid, placeholder: '输入目标用户 ID（不是服务器 ID）',
                 placeholderTextColor: dark ? '#999' : '#666', keyboardType: 'number-pad', style: { ...textStyle(dark), borderWidth: 1, borderColor: '#777', padding: 12, marginVertical: 12, borderRadius: 8 } }),
             React.createElement(Button, { label: '读取已缓存用户的服务器标签', onPress: () => {
@@ -343,19 +393,19 @@ function createServerTagInfo(A) {
             React.createElement(Button, { label: '刷新模块匹配', onPress: () => { A.scan(inspect); setStatus(diagnostic()); } }),
             React.createElement(RN.Text, { selectable: true, style: textStyle(dark) }, status),
             React.createElement(Button, { label: '复制调试日志', onPress: () => { diagnostic(); copy(logs.join('\n')); } }),
-            React.createElement(Button, { label: '清空会话缓存和日志', onPress: () => { snapshots.clear(); logs.length = 0; schemas.clear(); setStatus('已清空'); } }));
+            React.createElement(Button, { label: '清空会话缓存和日志', onPress: () => { snapshots.clear(); logs.length = 0; schemas.clear(); reportedStores.clear(); setStatus('已清空'); } }));
     }
     function start() {
         if (active) return;
         active = true;
-        log('loaded = 1.0.0; adapter=' + A.name + '; network=none');
+        log('loaded = 1.0.1; adapter=' + A.name + '; network=none');
         A.scan(inspect);
         const unsub = A.subscribe(inspect); if (unsub) cleanup.push(unsub);
         // Flux observe only: preserve dispatch and do not request anything.
         if (A.dispatcher && typeof read(A.dispatcher, 'dispatch') === 'function') {
             patch(A.dispatcher, 'dispatch', (args, ret) => {
                 const event = args[0];
-                if (read(event, 'type') === 'LOGOUT') { snapshots.clear(); roots.clear(); schemas.clear(); logs.length = 0; }
+                if (read(event, 'type') === 'LOGOUT') { snapshots.clear(); roots.clear(); schemas.clear(); reportedStores.clear(); logs.length = 0; }
                 if (read(event, 'type') === 'GUILD_CREATE') {
                     const v = read(event, 'guild'), id = idOf(read(v, 'id')); remember(guild(v, id), 'GUILD_CREATE');
                 }
@@ -367,7 +417,7 @@ function createServerTagInfo(A) {
     function stop() {
         active = false;
         while (cleanup.length) { try { cleanup.pop()(); } catch (_) {} }
-        patched = new WeakMap(); stores.clear(); roots.clear(); snapshots.clear(); schemas.clear(); logs.length = 0;
+        patched = new WeakMap(); stores.clear(); roots.clear(); snapshots.clear(); schemas.clear(); reportedStores.clear(); logs.length = 0;
         tagHooks = profileHooks = sheetHooks = 0;
     }
     return { start, stop, Settings, inspect, context, resolve, identity, findGuild, show, infoText, diagnostic };

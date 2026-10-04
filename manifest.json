@@ -7,8 +7,8 @@
     }
   ],
   "main": "index.js",
-  "version": "1.0.0",
-  "hash": "6679e5914f10eeb84d61963601053c88f5a6ccfd99e14fdb2504673b6cd2fc85",
+  "version": "1.0.1",
+  "hash": "719c2f1f3f46a0c33b09d55614eb6adf604f08fe6ad877a30c53a405474e9df4",
   "vendetta": {
     "icon": "InformationCircleIcon"
   }

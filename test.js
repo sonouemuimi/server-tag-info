@@ -94,6 +94,50 @@ test('late-loaded profile gets a local entry only for a user with identity', () 
     assert.equal(ret.props.children[1].props.label, '查看服务器标签本地信息');
     assert.equal(profile.default({ userId: '777777777777777777' }).type, RN.View);
 });
+test('actual guild_tag utility and badge paths are not component hooks', () => {
+    const cases = [
+        [{ ensureUserPrimaryGuild: function ensureUserPrimaryGuild() { return RAW.primary_guild; } }, 'modules/guild_tag/PrimaryGuildUtils.tsx'],
+        [{ getGuildTagBadgeUrl: function getGuildTagBadgeUrl() { return 'unchanged'; } }, 'modules/guild_tag/GuildTagUtils.tsx'],
+        [{ GuildTagBadge: function GuildTagBadge() { return React.createElement(RN.View); } }, 'modules/guild_tag/native/GuildTag.tsx'],
+        [{ GuildBadgeSword: function GuildBadgeSword() { return React.createElement(RN.View); } }, 'modules/guild_tag/native/badges/GuildBadgeSword.tsx']
+    ];
+    for (const [exports, modulePath] of cases) {
+        const functions = { ...exports }; p.inspect(exports, modulePath, modulePath);
+        for (const key of Object.keys(functions)) assert.equal(exports[key], functions[key]);
+    }
+});
+test('device-native default and minified memo chiplet are hooked', () => {
+    const native = { default: function n(props) { return React.createElement(RN.TouchableOpacity, { onPress() {} }); },
+        BaseGuildTagChiplet: { type: function x(props) { return React.createElement(RN.TouchableOpacity, { onPress() {} }); } } };
+    const before = [native.default, native.BaseGuildTagChiplet.type];
+    p.inspect(native, 99, 'modules/guild_tag/native/GuildTag.tsx');
+    assert.notEqual(native.default, before[0]); assert.notEqual(native.BaseGuildTagChiplet.type, before[1]);
+    const count = alerts.length;
+    native.default({ user: RAW }).props.onPress();
+    native.BaseGuildTagChiplet.type({ user: RAW }).props.onPress();
+    assert.equal(alerts.length, count + 2);
+});
+test('cross-realm Map and underscored guild containers are readable', () => {
+    const id = '555555555555555555';
+    observer({ _guilds: new Map([[id, { id, name: 'Map Cached Guild' }]]) }, 100);
+    assert.equal(p.resolve(p.context({ identityGuildId: id })).name, 'Map Cached Guild');
+});
+test('direct cache requires matching embedded guild id', () => {
+    const id = '444444444444444444';
+    observer({ cache: { [id]: { id, name: 'Direct Cached Guild' } } }, 101);
+    assert.equal(p.resolve(p.context({ identityGuildId: id })).name, 'Direct Cached Guild');
+    assert.equal(p.findGuild({ cache: { [id]: { id: U, name: 'Wrong ID' } } }, id), null);
+});
+test('missing-name diagnostics report cache surfaces without calling unverified getters', () => {
+    let calls = 0;
+    const store = { getName: () => 'GuildProfileStore', getProfile() { calls++; throw Error('must not call'); } };
+    observer({ default: store }, 102);
+    const info = p.resolve(p.context({ identityGuildId: '333333333333333333' }));
+    assert.equal(info.name, null); assert.equal(calls, 0);
+    assert.ok(messages.some(s => s.includes('cache surface =') && s.includes('getProfile')));
+    assert.ok(messages.some(s => s.includes('cache stages =')));
+    assert.ok(messages.some(s => s.includes('guild resolution =') && s.includes('hasName')));
+});
 test('unload removes hooks, clears snapshots; restart reinstalls', () => {
     p.stop(); assert.equal(tagModule.default, originalTag); assert.equal(observer, null);
     p.start(); assert.notEqual(tagModule.default, originalTag);

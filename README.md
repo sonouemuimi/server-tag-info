@@ -1,4 +1,4 @@
-# ServerTagInfo 1.0.0
+# ServerTagInfo 1.0.1
 
 Android Discord 的 Revenge / Revenge Xposed 插件。只查看客户端已经持有的 Server Tag 信息，不请求私人服务器资料。
 
@@ -17,8 +17,8 @@ https://raw.githubusercontent.com/sonouemuimi/server-tag-info/main/
 ## 安装包
 
 - 普通 Revenge / Revenge Xposed：按上面的 Raw 网址安装。仓库根目录的 `manifest.json` 和 `index.js` 是完整插件。
-- Revenge Next：下载 `ServerTagInfo-Next-1.0.0.zip`，通过支持 ZIP 的插件安装入口导入。普通 Revenge 的网址安装界面不能导入这个 ZIP。
-- `ServerTagInfo-Source-1.0.0.zip`：完整源码和构建文件备份。
+- Revenge Next：下载 `ServerTagInfo-Next-1.0.1.zip`，通过支持 ZIP 的插件安装入口导入。普通 Revenge 的网址安装界面不能导入这个 ZIP。
+- `ServerTagInfo-Source-1.0.1.zip`：完整源码和构建文件备份。
 - Revenge Xposed 是加载器；使用哪种格式取决于它加载的 JS 内核。
 
 ## 使用
@@ -55,6 +55,9 @@ https://raw.githubusercontent.com/sonouemuimi/server-tag-info/main/
 [ServerTagInfo] identity_guild_id = ...
 [ServerTagInfo] guild cache result = ...
 [ServerTagInfo] guild name = ...
+[ServerTagInfo] cache stages = ...
+[ServerTagInfo] cache surface = ...
+[ServerTagInfo] guild resolution = ...
 ```
 
 `tag hooks=0` 表示尚未识别到标签组件；不是“服务器一定没有名称”。可等待打开用户资料后，去插件设置刷新匹配。`guild cache result` 为 miss 而名称为空，是正常的“客户端未提供”。
@@ -63,9 +66,9 @@ https://raw.githubusercontent.com/sonouemuimi/server-tag-info/main/
 
 ## 验证范围与限制
 
-已核对 Revenge 实际加载器、官方 Next 模板、现有资料页/ActionSheet 插件和 Discord 官方 `primary_guild` 结构；详情见 `RESEARCH.md`。已经通过 14 项 Node 模拟集成测试。
+已核对 Revenge 实际加载器、官方 Next 模板、现有资料页/ActionSheet 插件和 Discord 官方 `primary_guild` 结构；详情见 `RESEARCH.md`。已经通过 19 项 Node 模拟集成测试。
 
-**未在你的 Android Discord 实测。** 没有你当前 APK 的 JS bundle 或运行期模块转储，无法静态确认该版本标签对应的函数名。插件通过实际已初始化模块的名字/导入路径定位候选组件，再用真实 identity 数据确认是否接管点击；不会把推测名称当作已验证结果。纯原生消息标题或改名后的组件可能无法直接 Hook，已提供资料页和插件设置入口。
+用户已在 Discord **344.13 (344013)**、Revenge **1b1d297-main** 测试 1.0.0：资料页入口和标签点击可打开信息，GuildStore 中的名称能读取；未命中缓存的标签显示“客户端未提供”。运行日志确认 UserStore 的路径为 `UserStore.getUser.primaryGuild`，字段为 `identityGuildId`、`identityEnabled`、`tag`、`badge`。1.0.1 根据这些日志收紧组件匹配，并增加缓存诊断，更新版本仍需设备复测。纯原生消息标题或改名后的组件可能无法直接 Hook，已提供资料页和插件设置入口。
 
 没有名称时无法恢复服务端未发来的信息；不会伪造数据。旧会话缓存可能有旧名称，界面显示数据来源。Secondary Store 的私有闭包缓存没有公开数据时无法读到，不会反射或调用未验证的请求接口。
 
@@ -82,6 +85,12 @@ node test.js
 - `legacy.js`：现有 Revenge / Vendetta 兼容 API 适配。
 - `next.js`：Revenge Next API 适配。
 - `manifest.json` 和 `index.js`：可以通过 URL 安装的普通 Revenge 插件。
-- `ServerTagInfo-Next-1.0.0.zip`：Next 格式安装包，根目录是 manifest 和 JS。
+- `ServerTagInfo-Next-1.0.1.zip`：Next 格式安装包，根目录是 manifest 和 JS。
 
 本插件为独立实现，不是 Revenge 官方插件。
+
+## 1.0.1 更新
+
+- 只匹配标签点击组件，排除 guild_tag 工具函数、动作和徽章绘制函数，避免 1.0.0 的 68 个宽泛 Hook。
+- 支持 Map、带下划线的 guild 容器及直接以 ID 索引的导出 cache；仍要求缓存对象内有一致的服务器 ID。
+- 缺少名称时记录各缓存阶段的命中情况，以及主要 Store 的方法/容器键名；不会额外调用未知 getter。`cache stages` 的 miss 只表示当前可读取来源未命中，不证明客户端所有私有缓存均为空。
