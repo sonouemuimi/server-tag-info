@@ -1,0 +1,15 @@
+{
+  "name": "ServerTagInfo",
+  "description": "只读取 Discord 已持有的服务器标签信息；不请求私人服务器资料。",
+  "authors": [
+    {
+      "name": "ServerTagInfo"
+    }
+  ],
+  "main": "index.js",
+  "version": "1.0.0",
+  "hash": "6679e5914f10eeb84d61963601053c88f5a6ccfd99e14fdb2504673b6cd2fc85",
+  "vendetta": {
+    "icon": "InformationCircleIcon"
+  }
+}

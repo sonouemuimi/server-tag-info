@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "id": "local.servertaginfo",
+  "name": "ServerTagInfo",
+  "description": "只读取 Discord 已持有的服务器标签信息；不请求私人服务器资料。",
+  "author": "ServerTagInfo",
+  "version": "1.0.0",
+  "dependencies": {
+    "revenge.api": {
+      "version": ">=1 <2"
+    },
+    "discord": {
+      "version": "*"
+    }
+  },
+  "dist": {
+    "script": "index.js"
+  }
+}
