@@ -1,0 +1,15 @@
+{
+  "name": "Emoji Exporter",
+  "description": "从本地服务器缓存导出 PNG/GIF 和 ZIP。Vendetta 兼容版；Android 真机待验证。",
+  "authors": [
+    {
+      "name": "Sonoue Muimi"
+    }
+  ],
+  "version": "1.0.0",
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_download_24px"
+  },
+  "hash": "4fc42c7b3a9b1c797877a07d19ec8bceab5e076bb3597b96a32e63823f276a41"
+}
