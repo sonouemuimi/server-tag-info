@@ -1,5 +1,5 @@
 (function () {
-/* HideBlockedAndIgnoredMessages — local fix 1.0.0-test2
+/* HideBlockedAndIgnoredMessages — local fix 1.0.0-test3
  * Original plugin: Zykrah / シグマ siguma (CC0-1.0).
  * Rewritten message filtering; no placeholder rows or fabricated events.
  * This file is a Vendetta/Revenge plugin expression, not a Node module.
@@ -12,6 +12,7 @@
     const authors = new Map();
     let collections = new WeakMap();
     let patchedOwners = new WeakSet();
+    let patchedHandlers = new WeakSet();
     let arrayViews = new WeakMap();
     let strippedMessages = new WeakMap();
     let relationships, messageStore, active = false;
@@ -144,7 +145,7 @@
         if (typeof collection.toArray !== "function") {
             if (!warnedCollection) {
                 warnedCollection = true;
-                v.logger.warn("[HideBlocked fix] Unknown collection shape; display filtering unavailable.");
+                v.logger.warn("[HideBlocked fix] Unknown collection shape; cached-list fallback unavailable; MessageStore event filtering remains active.");
             }
             return collection;
         }
@@ -158,7 +159,7 @@
         if (!owner || owner === collection || owner === Object.prototype || owner === Array.prototype) {
             if (!warnedCollection) {
                 warnedCollection = true;
-                v.logger.warn("[HideBlocked fix] Unsupported toArray owner; no global-event fallback used.");
+                v.logger.warn("[HideBlocked fix] Unsupported toArray owner; MessageStore event filtering remains active.");
             }
             return collection;
         }
@@ -177,6 +178,60 @@
             }
         }
         return collection;
+    }
+
+    // Only MessageStore receives the filtered event. Never edit the shared Flux
+    // event: GuildMemberStore/UserStore must receive the original member payload.
+    function filterStoreEvent(event) {
+        if (!event || !active) return event;
+        if (event.type === "LOAD_MESSAGES_SUCCESS" && Array.isArray(event.messages)) {
+            const messages = transformArray(event.messages, event.channelId || event.channel_id);
+            return messages === event.messages ? event : { ...event, messages };
+        }
+        if ((event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") && event.message) {
+            remember(event.message);
+            const message = transform(event.message, event.channelId || event.channel_id);
+            if (message === null) return null;
+            return message === event.message ? event : { ...event, message };
+        }
+        return event;
+    }
+
+    function installStoreHandlers() {
+        const dispatcher = v.metro.common.FluxDispatcher;
+        const handlers = dispatcher && dispatcher._actionHandlers;
+        if (!handlers || typeof handlers._computeOrderedActionHandlers !== "function") {
+            throw new Error("HideBlocked fix: 找不到 MessageStore 事件入口，请关闭插件并反馈日志。");
+        }
+        const types = new Set(["LOAD_MESSAGES_SUCCESS", "MESSAGE_CREATE", "MESSAGE_UPDATE"]);
+        function patchEntries(type, entries) {
+            if (!types.has(type) || !Array.isArray(entries)) return 0;
+            let found = 0;
+            for (const entry of entries) {
+                if (entry.name !== "MessageStore" || typeof entry.actionHandler !== "function") continue;
+                found++;
+                if (patchedHandlers.has(entry)) continue;
+                patches.push(v.patcher.instead("actionHandler", entry, (args, original) => {
+                    if (!active) return original(...args);
+                    const next = filterStoreEvent(args[0]);
+                    if (next === null) return false; // No change to MessageStore; other stores still run.
+                    if (next === args[0]) return original(...args);
+                    return original(next, ...args.slice(1));
+                }));
+                patchedHandlers.add(entry);
+            }
+            return found;
+        }
+        // The mobile Flux implementation caches ordered entries. Patch both the
+        // existing entries and replacements after its dependency cache rebuilds.
+        patches.push(v.patcher.after("_computeOrderedActionHandlers", handlers, ([type], result) => {
+            if (active) patchEntries(type, result);
+        }));
+        for (const type of types) {
+            if (!patchEntries(type, handlers._computeOrderedActionHandlers(type))) {
+                throw new Error("HideBlocked fix: 缺少 MessageStore " + type + " 入口，已撤销补丁。");
+            }
+        }
     }
 
     function Settings() {
@@ -204,6 +259,7 @@
         authors.clear();
         collections = new WeakMap();
         patchedOwners = new WeakSet();
+        patchedHandlers = new WeakSet();
         arrayViews = new WeakMap();
         strippedMessages = new WeakMap();
         warnedCollection = false;
@@ -225,13 +281,14 @@
             }
             active = true;
             try {
+                installStoreHandlers();
                 patches.push(v.patcher.after("getMessages", messageStore,
                     ([channelId], result) => registerCollection(result, channelId)));
             } catch (error) {
                 unload();
                 throw error;
             }
-            v.logger.log("[HideBlocked fix] 1.0.0-test2 loaded; display-only filtering, original Flux events and collection identity preserved.");
+            v.logger.log("[HideBlocked fix] 1.0.0-test3 loaded; MessageStore-only event filtering; original events preserved for member and other stores.");
         },
         onUnload: unload,
         settings: Settings

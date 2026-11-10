@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.env.PLUGIN_SOURCE || __dirname + '/index.js', 'utf8');
 let passed = 0;
-function test(name, fn) { fn(); passed++; console.log('PASS ' + name); }
+function test(name, fn) { if (process.env.TEST_FILTER && !name.includes(process.env.TEST_FILTER)) return; fn(); passed++; console.log('PASS ' + name); }
 const msg = (id, author = 'good', extra = {}) => ({id, channel_id: 'channel', author: {id: author}, type: 0, content: 'body', ...extra});
 function setup(options = {}, controls = {}) {
     const sent = [], logs = [], records = new Map(), members = new Map();
@@ -18,8 +18,7 @@ function setup(options = {}, controls = {}) {
     const store = {getMessages() { return collection; }, getMessage(channel, id) { return records.get(id); }};
     const relationships = {getRelationships() {}, isBlocked(id) { return blocked.has(id); }, isIgnored(id) { return ignored.has(id); }};
     if (controls.noIgnored) delete relationships.isIgnored;
-    const dispatcher = {dispatch(e) {
-        sent.push(e);
+    function handleMessage(e) {
         if (e.type === 'LOAD_MESSAGES_SUCCESS') {
             collection = new Messages(e.messages.slice());
             e.messages.forEach(m => records.set(m.id, m));
@@ -33,12 +32,31 @@ function setup(options = {}, controls = {}) {
             records.set(merged.id, merged);
             collection = new Messages(collection.items.map(m => m.id === merged.id ? merged : m));
         }
+    }
+    const memberEvents = [];
+    function handleMember(e) {
+        memberEvents.push(e);
         // Separate store receives the SAME event as MessageStore, just as in Flux.
         const messages = e.messages || (e.message ? [e.message] : []);
         for (const message of messages) {
             if (message.member && message.author) members.set(message.author.id, message.member);
         }
         if (e.type === 'GUILD_MEMBER_UPDATE') members.set(e.user.id, e.member);
+    }
+    const eventTypes = ['LOAD_MESSAGES_SUCCESS','MESSAGE_CREATE','MESSAGE_UPDATE','GUILD_MEMBER_UPDATE'];
+    let ordered = {};
+    function rebuild() {
+        ordered = Object.fromEntries(eventTypes.map(type => [type, [
+            {name:'MessageStore', actionHandler:handleMessage},
+            {name:'GuildMemberStore', actionHandler:handleMember}
+        ]]));
+        if (controls.missingHandler) ordered.MESSAGE_UPDATE = ordered.MESSAGE_UPDATE.slice(1);
+    }
+    rebuild();
+    const actionHandlers = {_computeOrderedActionHandlers(type) {return ordered[type] || [];}};
+    const dispatcher = {_actionHandlers:controls.noHandlers ? null : actionHandlers, dispatch(e) {
+        sent.push(e);
+        for (const entry of actionHandlers._computeOrderedActionHandlers(e.type)) entry.actionHandler(e);
         return 'dispatched';
     }};
     const originalDispatch = dispatcher.dispatch, originalGetMessages = store.getMessages;
@@ -62,7 +80,8 @@ function setup(options = {}, controls = {}) {
     assert.equal(typeof plugin.onLoad, 'function');
     plugin.onLoad();
     return {plugin, storage, sent, logs, blocked, ignored, store, members, records, dispatcher,
-        originalDispatch, originalGetMessages, Messages,
+        originalDispatch, originalGetMessages, Messages, memberEvents, actionHandlers, rebuild,
+        raw() {return collection.items;},
         view() {return store.getMessages('channel').toArray();},
         cache(items) {collection = new Messages(items);items.forEach(m=>records.set(m.id,m));return collection;},
         setCollection(value) {collection=value;}
@@ -86,11 +105,11 @@ test('member profile metadata survives a hidden reply and updates normally', () 
     x.dispatcher.dispatch({type:'GUILD_MEMBER_UPDATE',user:{id:'normal-user'},member:updated});
     assert.equal(x.members.get('normal-user'),updated);
 });
-test('global dispatcher remains untouched; blocked events reach all data stores', () => {
+test('global dispatcher remains untouched; only MessageStore excludes blocked messages', () => {
     const x=setup();assert.equal(x.dispatcher.dispatch,x.originalDispatch);
     const e=Object.freeze({type:'MESSAGE_CREATE',message:Object.freeze(msg('b','bad'))});
     assert.equal(x.dispatcher.dispatch(e),'dispatched');assert.equal(x.sent[0],e);
-    assert.equal(x.records.get('b'),e.message);assert.deepEqual(ids(x.view()),[]);
+    assert.equal(x.records.has('b'),false);assert.equal(x.memberEvents[0],e);assert.deepEqual(ids(x.raw()),[]);
     assert.equal(e.message.content,'body');
 });
 test('history retains full original events and pagination but filters displayed rows', () => {
@@ -98,7 +117,7 @@ test('history retains full original events and pagination but filters displayed 
     const e=Object.freeze({type:'LOAD_MESSAGES_SUCCESS',messages:list,hasMoreBefore:true,channelId:'channel'});
     x.dispatcher.dispatch(e);assert.equal(x.sent[0],e);assert.equal(x.sent[0].messages,list);
     assert.equal(x.sent[0].hasMoreBefore,true);assert.deepEqual(ids(x.view()),['g']);
-    assert.equal(x.records.size,2);
+    assert.equal(x.records.size,1);assert.equal(x.memberEvents[0].messages,list);
 });
 test('original collection identity, methods and raw lookup are preserved', () => {
     const x=setup();const c=x.cache([msg('b','bad'),msg('g')]);const lookup=c.lookup;
@@ -116,13 +135,13 @@ test('filtered array identity is stable across unchanged reads and new native ar
 test('unfiltered arrays and normal records keep native identity', () => {
     const x=setup();const a=[msg('g')];x.cache(a);assert.equal(x.view(),a);assert.equal(x.view()[0],a[0]);
 });
-test('camelCase blocked reply preview is stripped without changing member info or stored record', () => {
+test('camelCase blocked reply preview is stripped without changing original event or member info', () => {
     const x=setup();const member={nick:'colorful',roles:['green']};
     const reply=Object.freeze(msg('r','good',{type:19,member,referencedMessage:msg('b','bad'),messageReference:{messageId:'b'}}));
     x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:reply});const actual=x.view()[0];
     assert.equal(actual.content,'body');assert.equal(actual.type,0);assert.equal(actual.member,member);
     assert.equal(actual.referencedMessage,null);assert.equal(actual.messageReference,null);
-    assert.equal(reply.type,19);assert.equal(x.records.get('r'),reply);
+    assert.equal(reply.type,19);assert.equal(x.memberEvents[0].message,reply);assert.equal(x.records.get('r'),actual);
     assert.equal(x.view()[0],actual);assert.equal(x.view(),x.view());
 });
 test('snake_case reference-only replies resolve regardless of order in a page', () => {
@@ -141,7 +160,7 @@ test('unknown/deleted references, ordinary mentions and normal replies remain un
 test('partial live update reaches stores and remains hidden from display', () => {
     const x=setup();x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg('b','bad')});
     const e={type:'MESSAGE_UPDATE',message:{id:'b',content:'edited'}};x.dispatcher.dispatch(e);
-    assert.equal(x.sent[1],e);assert.equal(x.records.get('b').content,'edited');assert.equal(x.view().length,0);
+    assert.equal(x.sent[1],e);assert.equal(x.memberEvents[1],e);assert.equal(x.records.has('b'),false);assert.equal(x.view().length,0);
 });
 test('block/unblock and option changes work without refetching raw cached records', () => {
     const x=setup();x.cache([msg('g'),msg('b','bad')]);assert.deepEqual(ids(x.view()),['g']);
@@ -149,7 +168,7 @@ test('block/unblock and option changes work without refetching raw cached record
     x.blocked.clear();assert.deepEqual(ids(x.view()),['g','b']);
     x.blocked.add('bad');x.storage.blocked=false;assert.deepEqual(ids(x.view()),['g','b']);
 });
-test('unload restores hooks and records, reload reinstates filtering', () => {
+test('unload restores read hooks over preexisting records; reload reinstates filtering', () => {
     const x=setup();const c=x.cache([msg('b','bad')]), nativeToArray=c.toArray;
     assert.equal(x.view().length,0);x.plugin.onUnload();
     assert.equal(x.store.getMessages,x.originalGetMessages);assert.equal(c.toArray,nativeToArray);
@@ -176,5 +195,56 @@ test('unsupported collection shape is preserved and logged once', () => {
     assert.equal(x.store.getMessages('channel'),unsupported);assert.equal(x.store.getMessages('channel'),unsupported);
     assert.equal(x.logs.filter(s=>s.includes('Unknown collection')).length,1);
     assert.equal(x.dispatcher.dispatch,x.originalDispatch);
+});
+test('native list reading raw cache bypasses toArray without creating blocked placeholders', () => {
+    const x=setup({removeReplies:true});
+    const bad=Object.freeze(msg('b','bad',{member:{nick:'blocked nickname',roles:['red']}}));
+    const reply=Object.freeze(msg('r','normal',{referenced_message:bad,member:{nick:'normal nickname',roles:['yellow']}}));
+    const good=Object.freeze(msg('g','normal',{member:{nick:'normal nickname',roles:['yellow']}}));
+    const list=Object.freeze([reply,bad,good]);
+    const event=Object.freeze({type:'LOAD_MESSAGES_SUCCESS',messages:list,channelId:'channel',hasMoreBefore:true});
+    x.dispatcher.dispatch(event);
+    // This display path NEVER calls getMessages().toArray(). test2 leaks b and r here.
+    assert.deepEqual(ids(x.raw()),['g']);
+    assert.equal(x.members.get('normal').nick,'normal nickname');
+    assert.equal(x.members.get('bad').nick,'blocked nickname');
+    assert.equal(x.memberEvents[0],event);assert.equal(event.messages,list);
+});
+test('live blocked and ignored messages never enter raw cache but members still receive them', () => {
+    const x=setup();
+    for (const [id,author] of [['b','bad'],['i','ignored'],['g','good']]) {
+        x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg(id,author,{member:{nick:author,roles:['color']}})});
+    }
+    assert.deepEqual(ids(x.raw()),['g']);assert.equal(x.memberEvents.length,3);assert.equal(x.members.size,3);
+});
+test('MessageStore-only reply clone leaves original references and member metadata for other stores', () => {
+    const x=setup();const member={nick:'server name',roles:['purple']};
+    const message=Object.freeze(msg('r','good',{type:19,referencedMessage:msg('b','bad'),member}));
+    const event=Object.freeze({type:'MESSAGE_CREATE',message});x.dispatcher.dispatch(event);
+    assert.equal(x.raw()[0].referencedMessage,null);assert.equal(x.raw()[0].member,member);
+    assert.equal(x.memberEvents[0],event);assert.equal(x.memberEvents[0].message.referencedMessage.author.id,'bad');
+});
+test('rebuilt Flux dependency cache gets new scoped handlers', () => {
+    const x=setup();x.rebuild();x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg('b','bad')});
+    assert.deepEqual(ids(x.raw()),[]);assert.equal(x.memberEvents.length,1);
+});
+test('NoDelete-style global hook remains installed and continues forwarding normal events', () => {
+    const x=setup();const native=x.dispatcher.dispatch;
+    x.dispatcher.dispatch=function(e){if(e.type==='MESSAGE_DELETE')return false;return native.call(this,e);};
+    const noDelete=x.dispatcher.dispatch;
+    x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg('b','bad')});
+    x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg('g')});
+    assert.deepEqual(ids(x.raw()),['g']);assert.equal(x.memberEvents.length,2);
+    x.plugin.onUnload();assert.equal(x.dispatcher.dispatch,noDelete);
+    x.dispatcher.dispatch({type:'MESSAGE_CREATE',message:msg('b2','bad')});assert.deepEqual(ids(x.raw()),['g','b2']);
+});
+test('missing MessageStore handler fails explicitly instead of silently claiming to hide', () => {
+    assert.throws(()=>setup({}, {noHandlers:true}),/事件入口/);
+    assert.throws(()=>setup({}, {missingHandler:true}),/缺少 MessageStore/);
+});
+test('disabled filters keep original events and raw messages intact', () => {
+    const x=setup({blocked:false,ignored:false});const message=Object.freeze(msg('b','bad'));
+    const event=Object.freeze({type:'MESSAGE_CREATE',message});x.dispatcher.dispatch(event);
+    assert.equal(x.raw()[0],message);assert.equal(x.memberEvents[0],event);
 });
 console.log(`${passed} scenarios passed. Mock integration checks only, not Android UI validation.`);

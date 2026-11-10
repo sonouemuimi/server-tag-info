@@ -1,14 +1,14 @@
 {
   "name": "Hide Blocked Messages · 无占位修复",
-  "description": "过滤屏蔽/忽略消息与占位提示，可保留别人回复并去掉引用。test2：保留成员资料加载，手机实测待确认；请关闭旧隐藏插件。",
+  "description": "过滤屏蔽/忽略消息与占位提示，可保留别人回复并去掉引用。test3：消息缓存单独过滤，保留成员资料加载；待实测；请关闭旧隐藏插件。",
   "authors": [
     {
       "name": "Sonoue Muimi"
     }
   ],
-  "version": "1.0.0-test2",
+  "version": "1.0.0-test3",
   "main": "index.js",
-  "hash": "08a9ab9ff0c4ae7362793f7712a3686f39e08e19c084e0d86cd1d4250ab1ba4e",
+  "hash": "e2ed7e643348000c63d70116e14ec7eab872e0ea63c7d90eb86042c5cc37f375",
   "vendetta": {
     "icon": "ic_badge_staff"
   }
